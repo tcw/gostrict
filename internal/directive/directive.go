@@ -7,6 +7,8 @@
 //	//strict:allow argswap reason  suppression, placed in a declaration's doc comment
 //
 // Suppressions must give a reason, so every exception is explained in the code.
+//
+//strict:units
 package directive
 
 import (

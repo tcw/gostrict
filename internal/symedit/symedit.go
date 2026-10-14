@@ -3,6 +3,9 @@
 //
 // All functions are pure: they take source bytes and return new source
 // bytes. Callers handle files, imports and formatting.
+//
+//strict:pure
+//strict:units
 package symedit
 
 import (
