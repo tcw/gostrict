@@ -1,0 +1,89 @@
+# golangci-lint v2 configuration: only rules that catch real bugs.
+#
+# Every enabled linter here fails the build. Style-only linters (line
+# length, name length, comment punctuation, whitespace) are deliberately
+# off: they create churn without catching defects. To adopt this in another
+# module, copy the file and adjust the exclusions at the bottom.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    # Errors are values: never drop or mishandle them.
+    - errcheck       # unchecked errors
+    - errorlint      # use errors.Is/As, wrap with %w
+    - wrapcheck      # errors crossing a package boundary get context
+    - nilerr         # returning nil when err != nil
+    - nilnil         # returning nil, nil from (T, error) functions
+    # Exhaustiveness: the closest Go gets to total pattern matching.
+    - exhaustive     # switch over an enum covers every constant
+    - gochecksumtype # type switch over a sealed interface covers every variant
+    # Hidden state and hidden control flow.
+    - gochecknoglobals
+    - gochecknoinits
+    - forbidigo      # see the forbid list below
+    - forcetypeassert
+    # Correctness.
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - durationcheck
+    - makezero
+    - predeclared
+    - unconvert
+    - nolintlint     # //nolint must name the linter and say why
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    exhaustive:
+      # A default case does not make a switch exhaustive: adding an enum
+      # value must break every switch that ignores it.
+      default-signifies-exhaustive: false
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # memory layout, not correctness
+        - shadow         # flags every idiomatic `err :=` in a nested scope
+    forbidigo:
+      forbid:
+        - pattern: ^panic$
+          msg: return an error; for programmer errors state a contract with contract.Require
+        - pattern: ^print(ln)?$
+          msg: write to an io.Writer that is passed in
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: write to an io.Writer that is passed in
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    rules:
+      # Tests may assert types and keep fixtures in variables.
+      - path: _test\.go
+        linters: [forcetypeassert, gochecknoglobals, wrapcheck]
+      # analysis.Analyzer.Run returns a nil result with a nil error by convention.
+      - path: (^|/)analyzer/
+        text: "return both a `nil` error and an invalid value"
+        linters: [nilnil]
+      # The contract package is the one place that is allowed to panic.
+      - path: (^|/)contract/
+        linters: [forbidigo]
+      # Analyzer test data contains deliberate violations.
+      - path: (^|/)testdata/
+        linters: [errcheck, gochecknoglobals, forbidigo, unused, govet, staticcheck]
+
+formatters:
+  enable:
+    - gofumpt   # gofmt with fewer degrees of freedom
+    - goimports
