@@ -20,12 +20,15 @@ import (
 	"strings"
 )
 
+// Line is a 1-based line number in the source.
+type Line int
+
 // Decl is one named top-level declaration.
 type Decl struct {
 	Kind    string `json:"kind"` // func, method, type, var or const
 	Name    string `json:"name"` // Name, or Recv.Method for methods
-	Line    int    `json:"line"`
-	EndLine int    `json:"end_line"`
+	Line    Line   `json:"line"`
+	EndLine Line   `json:"end_line"`
 	Grouped bool   `json:"grouped,omitempty"` // declared inside a parenthesized type/var/const block
 
 	start, end int    // byte range, doc comment included
@@ -71,7 +74,7 @@ func List(src []byte) ([]Decl, error) {
 
 func collect(fset *token.FileSet, f *ast.File) []Decl {
 	off := func(p token.Pos) int { return fset.Position(p).Offset }
-	line := func(p token.Pos) int { return fset.Position(p).Line }
+	line := func(p token.Pos) Line { return Line(fset.Position(p).Line) }
 	var out []Decl
 	add := func(d Decl, start, end token.Pos) {
 		d.start, d.end = off(start), off(end)

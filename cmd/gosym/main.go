@@ -169,7 +169,7 @@ func (c cli) show(args []string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "// %s:%d-%d\n", file, d.Line, d.EndLine)
 	for i, l := range strings.Split(text, "\n") {
-		fmt.Fprintf(&b, "%5d\t%s\n", d.Line+i, l)
+		fmt.Fprintf(&b, "%5d\t%s\n", d.Line+symedit.Line(i), l)
 	}
 	return write(c.stdout, b.String())
 }

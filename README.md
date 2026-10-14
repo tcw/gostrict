@@ -107,7 +107,7 @@ package route
 | Analyzer | Applies to | Reports |
 |---|---|---|
 | `argswap` | every package (not tests) | Adjacent parameters sharing a predeclared type: `Move(x, y, dist float64)`. Swapped arguments compile silently. Fix with defined types (`Meters`, `Degrees`) or a struct parameter. Methods named `Less`/`Swap` are skipped (`-argswap.ignore`). |
-| `units` | `//strict:units` | Raw `float32`/`float64` in exported signatures and exported struct fields, also inside slices, maps and pointers. `-units.ints` adds integer types. |
+| `units` | `//strict:units` | Raw `float32`/`float64` in exported signatures and exported struct fields, also inside slices, maps and pointers. `-units.ints` adds integer types, except byte slices and arrays (`[]byte`, `[32]byte`), which are data. |
 | `purity` | `//strict:pure` | Imports that do I/O or add nondeterminism or concurrency (`os`, `net`, `net/http`, `log`, `context`, `sync`, `math/rand`, ...); imports of non-standard packages not themselves marked pure; `time.Now`, `time.Sleep`, `fmt.Println` and friends; `go` statements; package-level variables other than error sentinels. |
 | `contracts` | `//strict:contracts` | Exported functions with parameters whose body does not start with `contract.Require`; contract calls whose condition is constant `true` or whose message is empty or not a constant string. |
 

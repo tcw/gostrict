@@ -23,8 +23,10 @@ every exported function, method and struct field must use defined types
 including inside slices, arrays, maps and pointers. The compiler then rejects
 code that passes degrees where meters are expected.
 
-With -ints, raw integer types are reported as well. Suppress a single
-declaration with //strict:allow units <reason> in its doc comment.`
+With -ints, raw integer types are reported as well, except byte slices and
+byte arrays ([]byte, [32]byte), which hold data rather than a quantity.
+Suppress a single declaration with //strict:allow units <reason> in its doc
+comment.`
 
 // Analyzer is the units analyzer.
 //
@@ -145,6 +147,7 @@ func exportedRecv(fl *ast.FieldList) bool {
 
 // rawUnit returns the name of the raw numeric type found in t (looking
 // through slices, arrays, pointers and maps), or "" if there is none.
+// Byte slices and arrays are data, not quantities, so they never count.
 func rawUnit(t types.Type, ints bool) string {
 	switch t := types.Unalias(t).(type) {
 	case *types.Basic:
@@ -153,8 +156,14 @@ func rawUnit(t types.Type, ints bool) string {
 			return t.Name()
 		}
 	case *types.Slice:
+		if isByte(t.Elem()) {
+			return ""
+		}
 		return rawUnit(t.Elem(), ints)
 	case *types.Array:
+		if isByte(t.Elem()) {
+			return ""
+		}
 		return rawUnit(t.Elem(), ints)
 	case *types.Pointer:
 		return rawUnit(t.Elem(), ints)
@@ -165,4 +174,10 @@ func rawUnit(t types.Type, ints bool) string {
 		return rawUnit(t.Elem(), ints)
 	}
 	return ""
+}
+
+// isByte reports whether t is byte (uint8).
+func isByte(t types.Type) bool {
+	b, ok := types.Unalias(t).(*types.Basic)
+	return ok && b.Kind() == types.Uint8
 }
