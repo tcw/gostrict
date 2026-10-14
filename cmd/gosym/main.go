@@ -374,16 +374,18 @@ func resolve(t target) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	var hits []string
-	var hitSrc []byte
+	type hit struct {
+		file string
+		src  []byte
+	}
+	var hits []hit
 	for _, f := range files {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			return "", nil, fmt.Errorf("read %s: %w", f, err)
 		}
 		if _, err := symedit.Find(src, name); err == nil {
-			hits = append(hits, f)
-			hitSrc = src
+			hits = append(hits, hit{file: f, src: src})
 		} else if !errors.Is(err, symedit.ErrNotFound) && len(files) == 1 {
 			return "", nil, fmt.Errorf("%s: %w", f, err)
 		}
@@ -392,9 +394,13 @@ func resolve(t target) (string, []byte, error) {
 	case 0:
 		return "", nil, fmt.Errorf("%s not declared in %s (%d files searched); try gosym list %s", symedit.NormalizeName(name), path, len(files), path)
 	case 1:
-		return hits[0], hitSrc, nil
+		return hits[0].file, hits[0].src, nil
 	}
-	return "", nil, fmt.Errorf("%s is declared in several files (%s); pass the file instead of the directory", symedit.NormalizeName(name), strings.Join(hits, ", "))
+	names := make([]string, len(hits))
+	for i, h := range hits {
+		names[i] = h.file
+	}
+	return "", nil, fmt.Errorf("%s is declared in several files (%s); pass the file instead of the directory", symedit.NormalizeName(name), strings.Join(names, ", "))
 }
 
 func fixImports(file string, src []byte) ([]byte, error) {

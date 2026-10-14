@@ -51,6 +51,9 @@ func TestList(t *testing.T) {
 	if strings.Join(got, "|") != want {
 		t.Errorf("List =\n%s\nwant\n%s", strings.Join(got, "|"), want)
 	}
+	if len(decls) < 2 {
+		t.Fatalf("List returned %d declarations, want at least 2", len(decls))
+	}
 	if decls[0].Line != 6 || decls[0].EndLine != 7 {
 		t.Errorf("Meters spans %d-%d, want 6-7 (doc comment included)", decls[0].Line, decls[0].EndLine)
 	}
