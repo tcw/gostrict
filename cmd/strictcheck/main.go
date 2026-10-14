@@ -1,6 +1,8 @@
 // Command strictcheck runs every check on a Go module and prints one JSON
 // report: compile errors, analyzer findings, golangci-lint issues, failing
-// tests and (when installed) NilAway findings, all in the same shape.
+// tests and NilAway findings, all in the same shape. golangci-lint, NilAway
+// and the golangci-lint configuration are built in; nothing else needs to be
+// installed.
 //
 //	strictcheck [flags] [packages]      (default ./...)
 //
@@ -11,10 +13,11 @@
 //
 //	compile  load and type-check all packages, tests included
 //	analyze  gostrict analyzers (argswap, units, purity, contracts), plus
-//	         the go vet suite when golangci-lint is not running it
-//	lint     golangci-lint v2 with the module's own .golangci.yml
+//	         the go vet suite when the lint step is not running it
+//	lint     golangci-lint v2 with the module's .golangci.yml, or the
+//	         built-in configuration when there is none
 //	test     go test -json
-//	nilaway  go.uber.org/nilaway, skipped when not installed
+//	nilaway  go.uber.org/nilaway on the module's own packages
 //
 // When compile fails, the later steps are skipped: fix those errors first.
 package main
@@ -27,7 +30,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -99,17 +101,22 @@ func allSteps() []string {
 }
 
 type options struct {
-	dir      string
-	steps    []string
-	format   string
-	max      int
-	short    bool
-	vet      string
-	timeout  time.Duration
-	patterns []string
+	dir         string
+	printConfig bool
+	fmt         bool
+	steps       []string
+	format      string
+	max         int
+	short       bool
+	vet         string
+	timeout     time.Duration
+	patterns    []string
 }
 
 func main() {
+	if os.Getenv(golangciEnv) == "1" {
+		os.Exit(golangciMain())
+	}
 	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -122,8 +129,22 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "strictcheck:", err)
 		return 2
 	}
+	if opts.printConfig {
+		if _, err := stdout.Write(golangciConfig); err != nil {
+			_, _ = fmt.Fprintln(stderr, "strictcheck:", err)
+			return 2
+		}
+		return 0
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
+	if opts.fmt {
+		if err := format(ctx, opts, stdout, stderr); err != nil {
+			_, _ = fmt.Fprintln(stderr, "strictcheck:", err)
+			return 1
+		}
+		return 0
+	}
 	rep := check(ctx, opts)
 	finalize(rep, opts.max)
 	if opts.format == "text" {
@@ -154,7 +175,9 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&opts.format, "format", "json", "output format: json or text")
 	fs.IntVar(&opts.max, "max", 200, "maximum findings to print (0 = all); counts still cover everything")
 	fs.BoolVar(&opts.short, "short", false, "pass -short to go test")
-	fs.StringVar(&opts.vet, "vet", "auto", "run the go vet suite in the analyze step: auto (only when golangci-lint does not run), on, off")
+	fs.StringVar(&opts.vet, "vet", "auto", "run the go vet suite in the analyze step: auto (only when the lint step does not run), on, off")
+	fs.BoolVar(&opts.printConfig, "print-config", false, "print the built-in golangci-lint config and exit (save it as .golangci.yml to customize)")
+	fs.BoolVar(&opts.fmt, "fmt", false, "format the packages with the formatters in the golangci-lint config (gofumpt, goimports) and exit")
 	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "overall time limit")
 	// Expose analyzer flags as -<analyzer>.<flag>, like go vet does.
 	for _, a := range strictAnalyzers() {
@@ -191,21 +214,21 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	return opts, nil
 }
 
-// check runs the selected steps in order and collects their results.
-func check(ctx context.Context, opts options) *Report {
+// moduleRoot returns the absolute form of the -C directory.
+func moduleRoot(opts options) rootDir {
 	abs, err := filepath.Abs(opts.dir)
 	if err != nil {
 		abs = opts.dir
 	}
-	root := rootDir(abs)
+	return rootDir(abs)
+}
+
+// check runs the selected steps in order and collects their results.
+func check(ctx context.Context, opts options) *Report {
+	root := moduleRoot(opts)
 	r := &runner{root: root, patterns: opts.patterns, short: opts.short, analyzers: strictAnalyzers()}
 	want := func(s string) bool { return slices.Contains(opts.steps, s) }
-	lintRuns := false
-	if want("lint") {
-		_, lookErr := exec.LookPath("golangci-lint")
-		lintRuns = lookErr == nil
-	}
-	if opts.vet == "on" || (opts.vet == "auto" && !lintRuns) {
+	if opts.vet == "on" || (opts.vet == "auto" && !want("lint")) {
 		r.analyzers = append(r.analyzers, vetAnalyzers()...)
 	}
 

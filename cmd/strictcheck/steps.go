@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
+	"go.uber.org/nilaway"
+	nilawayconfig "go.uber.org/nilaway/config"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/checker"
 	"golang.org/x/tools/go/packages"
@@ -41,8 +42,6 @@ func timed(ctx context.Context, name string, f stepFunc) (Step, []Diagnostic) {
 	diags, detail, err := f(ctx)
 	s := Step{Name: name, Status: statusPass, Detail: detail, Millis: time.Since(start).Milliseconds()}
 	switch {
-	case errors.Is(err, errSkip):
-		s.Status = statusSkipped
 	case err != nil:
 		s.Status = statusError
 		s.Detail = err.Error()
@@ -106,6 +105,13 @@ func countRoots(pkgs []*packages.Package) int {
 
 // analyze runs the analyzers over the loaded packages in process.
 func (r *runner) analyze(_ context.Context) ([]Diagnostic, string, error) {
+	diags, err := r.runAnalyzers(r.analyzers)
+	return diags, fmt.Sprintf("%d analyzers", len(r.analyzers)), err
+}
+
+// runAnalyzers runs analyzers over the loaded packages in process and
+// returns their findings outside generated files.
+func (r *runner) runAnalyzers(analyzers []*analysis.Analyzer) ([]Diagnostic, error) {
 	var roots []*packages.Package
 	for _, p := range r.pkgs {
 		if p.Name == "main" && strings.HasSuffix(p.ID, ".test") {
@@ -113,9 +119,9 @@ func (r *runner) analyze(_ context.Context) ([]Diagnostic, string, error) {
 		}
 		roots = append(roots, p)
 	}
-	graph, err := checker.Analyze(r.analyzers, roots, nil)
+	graph, err := checker.Analyze(analyzers, roots, nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("run analyzers: %w", err)
+		return nil, fmt.Errorf("run analyzers: %w", err)
 	}
 	var diags []Diagnostic
 	var failures []string
@@ -139,35 +145,29 @@ func (r *runner) analyze(_ context.Context) ([]Diagnostic, string, error) {
 		}
 	}
 	if len(failures) > 0 {
-		return diags, "", fmt.Errorf("analyzer failures: %s", strings.Join(failures, "; "))
+		return diags, fmt.Errorf("analyzer failures: %s", strings.Join(failures, "; "))
 	}
-	return diags, fmt.Sprintf("%d analyzers", len(r.analyzers)), nil
+	return diags, nil
 }
 
-var golangciVersion = regexp.MustCompile(`version v?(\d+)\.(\d+)\.(\d+)`)
-
-// lint runs golangci-lint v2 with the repository's own configuration.
+// lint runs the golangci-lint built into strictcheck, by running this
+// binary again with golangciEnv set.
 func (r *runner) lint(ctx context.Context) ([]Diagnostic, string, error) {
-	bin, err := exec.LookPath("golangci-lint")
+	self, err := os.Executable()
 	if err != nil {
-		return nil, "", fmt.Errorf("golangci-lint not found on PATH: %w", err)
+		return nil, "", fmt.Errorf("find strictcheck binary: %w", err)
 	}
-	ver, err := exec.CommandContext(ctx, bin, "--version").Output()
+	cfg, source, cleanup, err := golangciConfigFile(r.root)
+	defer cleanup()
 	if err != nil {
-		return nil, "", fmt.Errorf("golangci-lint --version: %w", err)
+		return nil, "", err
 	}
-	m := golangciVersion.FindSubmatch(ver)
-	if m == nil {
-		return nil, "", fmt.Errorf("cannot read golangci-lint version from %q", strings.TrimSpace(string(ver)))
-	}
-	if major, _ := strconv.Atoi(string(m[1])); major < 2 {
-		return nil, "", fmt.Errorf("golangci-lint %s.%s.%s found, strictcheck needs v2", m[1], m[2], m[3])
-	}
+	detail := "golangci-lint " + golangciVersion() + ", " + source
 	args := append([]string{
-		"run", "--output.json.path=stdout", "--show-stats=false",
-		"--max-issues-per-linter=0", "--max-same-issues=0",
+		"run", "--config=" + cfg, "--output.json.path=stdout", "--show-stats=false",
+		"--path-mode=abs", "--max-issues-per-linter=0", "--max-same-issues=0",
 	}, r.patterns...)
-	stdout, stderr, code, err := run(ctx, r.root, bin, args...)
+	stdout, stderr, code, err := runEnv(ctx, r.root, []string{golangciEnv + "=1"}, self, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -175,10 +175,10 @@ func (r *runner) lint(ctx context.Context) ([]Diagnostic, string, error) {
 		return nil, "", fmt.Errorf("golangci-lint exited %d: %s", code, tail(stderr, 15))
 	}
 	if len(bytes.TrimSpace(stdout)) == 0 {
-		return nil, "golangci-lint " + string(m[1]) + "." + string(m[2]), nil
+		return nil, detail, nil
 	}
 	diags, err := parseGolangci(stdout, r.root)
-	return diags, "golangci-lint " + string(m[1]) + "." + string(m[2]), err
+	return diags, detail, err
 }
 
 // test runs go test -json and reports failing tests.
@@ -202,41 +202,34 @@ func (r *runner) test(ctx context.Context) ([]Diagnostic, string, error) {
 	return diags, "", nil
 }
 
-var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
-
-// nilaway runs Uber's NilAway when it is installed.
-func (r *runner) nilaway(ctx context.Context) ([]Diagnostic, string, error) {
-	bin, err := exec.LookPath("nilaway")
-	if err != nil {
-		return nil, "not installed: go install go.uber.org/nilaway/cmd/nilaway@latest", errSkip
-	}
-	args := []string{"-json"}
+// nilaway runs NilAway in process over the module's own packages.
+func (r *runner) nilaway(_ context.Context) ([]Diagnostic, string, error) {
+	flags := map[string]string{nilawayconfig.PrettyPrintFlag: "false"}
 	if r.modulePath != "" {
-		args = append(args, "-include-pkgs="+r.modulePath)
+		flags[nilawayconfig.IncludePkgsFlag] = r.modulePath
 	}
-	args = append(args, r.patterns...)
-	stdout, stderr, code, err := run(ctx, r.root, bin, args...)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(bytes.TrimSpace(stdout)) == 0 {
-		if code != 0 {
-			return nil, "", fmt.Errorf("nilaway exited %d: %s", code, tail(stderr, 15))
+	for name, value := range flags {
+		if err := nilawayconfig.Analyzer.Flags.Set(name, value); err != nil {
+			return nil, "", fmt.Errorf("configure nilaway: %w", err)
 		}
-		return nil, "", nil
 	}
-	diags, err := parseAnalysisJSON(ansi.ReplaceAll(stdout, nil), r.root)
+	diags, err := r.runAnalyzers([]*analysis.Analyzer{nilaway.Analyzer})
 	return diags, "", err
 }
-
-// errSkip marks a step that chose not to run; its detail says why.
-var errSkip = errors.New("skipped")
 
 // run executes a command in dir and returns its output and exit code. err
 // is set only when the command could not be started or was cancelled.
 func run(ctx context.Context, dir rootDir, name string, args ...string) ([]byte, []byte, int, error) {
+	return runEnv(ctx, dir, nil, name, args...)
+}
+
+// runEnv is run with extra environment variables (KEY=value).
+func runEnv(ctx context.Context, dir rootDir, env []string, name string, args ...string) ([]byte, []byte, int, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = string(dir)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

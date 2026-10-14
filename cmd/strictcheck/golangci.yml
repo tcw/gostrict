@@ -2,13 +2,19 @@
 #
 # Every enabled linter here fails the build. Style-only linters (line
 # length, name length, comment punctuation, whitespace) are deliberately
-# off: they create churn without catching defects. To adopt this in another
-# module, copy the file and adjust the exclusions at the bottom.
+# off: they create churn without catching defects.
+#
+# strictcheck has this file built in and uses it when the module has no
+# .golangci.yml of its own. To customize it, save a copy in the module root
+# with `strictcheck -print-config > .golangci.yml` and edit that.
 version: "2"
 
 run:
   timeout: 5m
   tests: true
+  # Path patterns below are relative to the module root, wherever this file
+  # is stored.
+  relative-path-mode: gomod
 
 linters:
   default: none

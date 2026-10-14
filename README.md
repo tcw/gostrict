@@ -8,15 +8,18 @@ It has five parts:
 
 | Part | What it does |
 |---|---|
-| `cmd/strictcheck` | Runs every check (compile, analyzers, golangci-lint, tests, NilAway) and prints **one JSON report** in one shape |
+| `cmd/strictcheck` | Runs every check (compile, analyzers, golangci-lint, tests, NilAway) and prints **one JSON report** in one shape. golangci-lint and NilAway are built in |
 | `analyzer/*` | Four custom analyzers: `argswap`, `units`, `purity`, `contracts` |
 | `contract` | `contract.Require` / `Ensure` / `Invariant`, compiled out with `-tags nocontracts` |
 | `cmd/gosym` | Read and edit code **one declaration at a time, by name**, with imports fixed automatically |
-| `.golangci.yml` | A golangci-lint v2 config with only bug-catching linters, all fatal |
+| `cmd/strictcheck/golangci.yml` | The built-in golangci-lint v2 config: only bug-catching linters, all fatal |
 
 ## Setup
 
-Requires Go 1.24+ and, for the lint step, golangci-lint v2.
+Requires Go 1.27.2+. Nothing else: golangci-lint, NilAway and the
+golangci-lint configuration are compiled into `strictcheck`. If your
+installed Go is older, the `go` command downloads 1.27.2 for you (unless
+`GOTOOLCHAIN=local` is set).
 
 ```sh
 # in gostrict itself
@@ -26,14 +29,24 @@ go test ./...
 go get -tool github.com/tcw/gostrict/cmd/strictcheck@latest
 go get -tool github.com/tcw/gostrict/cmd/gosym@latest
 go get github.com/tcw/gostrict/contract@latest   # if you use contracts
-cp path/to/gostrict/.golangci.yml .
 
 go tool strictcheck              # JSON report
 go tool strictcheck -format text # the same, for people
 ```
 
-Optional: `go install go.uber.org/nilaway/cmd/nilaway@latest` enables the
-nil-safety step; without it the step reports `skipped`.
+`go get -tool` records the tools in your `go.mod`, so everyone on the
+project runs the same version. It also raises your `go` line to 1.27.2 and
+adds golangci-lint's dependencies (about 200 modules) to `go.mod` as
+indirect requirements. To keep `go.mod` untouched, install the binaries
+instead and drop the `go tool` prefix:
+
+```sh
+go install github.com/tcw/gostrict/cmd/strictcheck@latest
+go install github.com/tcw/gostrict/cmd/gosym@latest
+```
+
+The first build of `strictcheck` takes about a minute; after that it is
+cached.
 
 ## strictcheck
 
@@ -47,10 +60,10 @@ errors make every other report noise.
 | Step | What runs |
 |---|---|
 | `compile` | Loads and type-checks every package, **tests included** |
-| `analyze` | The four gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) when golangci-lint is not running it |
-| `lint` | golangci-lint v2 with the module's own config, no issue caps |
+| `analyze` | The four gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) when the `lint` step is not running it |
+| `lint` | The built-in golangci-lint v2, with the module's `.golangci.yml` if it has one and the built-in config otherwise, no issue caps |
 | `test` | `go test -json -count=1`; one finding per failing leaf test, stack traces trimmed to frames inside the module |
-| `nilaway` | NilAway restricted to the module's own packages, if installed |
+| `nilaway` | The built-in NilAway, restricted to the module's own packages |
 
 Output (abridged):
 
@@ -87,6 +100,8 @@ list.
 | `-vet` | `auto` | run the vet suite in `analyze`: `auto`, `on`, `off` |
 | `-timeout` | `10m` | overall limit |
 | `-<analyzer>.<flag>` | | analyzer flags, e.g. `-purity.allow=github.com/paulmach/orb` |
+| `-fmt` | | format the code with the config's formatters (`gofumpt`, `goimports`) and exit |
+| `-print-config` | | print the built-in golangci-lint config and exit |
 
 Exit codes: `0` all passed, `1` findings or a failed step, `2` usage error.
 
@@ -196,7 +211,16 @@ and printing, `forcetypeassert`), and correctness (`govet` with nearly all
 analyzers, `staticcheck`, `unused`, `ineffassign`, `bodyclose`, `noctx`,
 SQL row/close checks, and a few more). `nolintlint` requires every
 `//nolint` to name the linter and give a reason. Formatting is `gofumpt` plus
-`goimports`; `golangci-lint fmt` applies it.
+`goimports`; `strictcheck -fmt` applies it.
+
+The config is built into `strictcheck` and used whenever the module has no
+golangci-lint config of its own (`.golangci.yml`, `.yaml`, `.toml` or
+`.json`, in the module root or a parent directory). To change it, start from
+the built-in one:
+
+```sh
+go tool strictcheck -print-config > .golangci.yml
+```
 
 Deliberately off: line length, identifier length, comment punctuation,
 whitespace rules, complexity scores. They produce churn rather than catch

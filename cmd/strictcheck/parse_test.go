@@ -37,28 +37,6 @@ func TestParseGolangci(t *testing.T) {
 	}
 }
 
-func TestParseAnalysisJSON(t *testing.T) {
-	data := []byte(`{"example.com/m/core":{"nilaway":[{"posn":"/root/core/a.go:3:9","message":"Potential nil panic"}]}}
-{"example.com/m/other":{"nilaway":{"error":"boom"}}}`)
-	diags, err := parseAnalysisJSON(data, "/root")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(diags) != 2 {
-		t.Fatalf("got %d diagnostics, want 2: %+v", len(diags), diags)
-	}
-	got := map[string]Diagnostic{}
-	for _, d := range diags {
-		got[d.File] = d
-	}
-	if d := got["core/a.go"]; d.Line != 3 || d.Col != 9 || d.Rule != "nilaway" {
-		t.Errorf("nil panic diagnostic = %+v", d)
-	}
-	if d := got[""]; !strings.Contains(d.Message, "boom") {
-		t.Errorf("error diagnostic = %+v", d)
-	}
-}
-
 func TestParseTestEvents(t *testing.T) {
 	events := `{"Action":"run","Package":"m/p","Test":"TestA"}
 {"Action":"output","Package":"m/p","Test":"TestA","Output":"=== RUN   TestA\n"}

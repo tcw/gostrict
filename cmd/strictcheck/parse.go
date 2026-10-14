@@ -70,7 +70,7 @@ func parseGolangci(data []byte, root rootDir) ([]Diagnostic, error) {
 		msg := is.Text
 		switch is.FromLinter {
 		case "gofumpt", "goimports", "gofmt", "gci", "golines":
-			msg += "; run golangci-lint fmt to fix"
+			msg += "; run strictcheck -fmt to fix"
 		}
 		diags = append(diags, Diagnostic{
 			Step:    "lint",
@@ -80,45 +80,6 @@ func parseGolangci(data []byte, root rootDir) ([]Diagnostic, error) {
 			Col:     is.Pos.Column,
 			Message: msg,
 		})
-	}
-	return diags, nil
-}
-
-// parseAnalysisJSON reads the -json output of a go/analysis driver
-// (singlechecker, multichecker, go vet -json): a map from package ID to a
-// map from analyzer name to either a list of diagnostics or an error.
-func parseAnalysisJSON(data []byte, root rootDir) ([]Diagnostic, error) {
-	var diags []Diagnostic
-	// Drivers print one JSON object per package group; decode them all.
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	for {
-		var tree map[string]map[string]json.RawMessage
-		if err := dec.Decode(&tree); err == io.EOF {
-			break
-		} else if err != nil {
-			return diags, fmt.Errorf("parse analysis JSON: %w", err)
-		}
-		for _, byAnalyzer := range tree {
-			for name, raw := range byAnalyzer {
-				var list []struct {
-					Posn    string `json:"posn"`
-					Message string `json:"message"`
-				}
-				if err := json.Unmarshal(raw, &list); err != nil {
-					var e struct {
-						Err string `json:"error"`
-					}
-					if json.Unmarshal(raw, &e) == nil && e.Err != "" {
-						diags = append(diags, Diagnostic{Rule: name, Message: "analysis error: " + e.Err})
-					}
-					continue
-				}
-				for _, d := range list {
-					file, line, col := parsePos(d.Posn)
-					diags = append(diags, Diagnostic{Rule: name, File: root.rel(file), Line: line, Col: col, Message: d.Message})
-				}
-			}
-		}
 	}
 	return diags, nil
 }
