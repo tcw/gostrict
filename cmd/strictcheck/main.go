@@ -1,8 +1,6 @@
 // Command strictcheck runs every check on a Go module and prints one JSON
-// report: compile errors, analyzer findings, golangci-lint issues, failing
-// tests and NilAway findings, all in the same shape. golangci-lint, NilAway
-// and the golangci-lint configuration are built in; nothing else needs to be
-// installed.
+// report: compile errors, analyzer findings and failing tests, all in the
+// same shape. Nothing else needs to be installed.
 //
 //	strictcheck [flags] [packages]      (default ./...)
 //
@@ -13,11 +11,8 @@
 //
 //	compile  load and type-check all packages, tests included
 //	analyze  gostrict analyzers (argswap, units, purity, contracts), plus
-//	         the go vet suite when the lint step is not running it
-//	lint     golangci-lint v2 with the module's .golangci.yml, or the
-//	         built-in configuration when there is none
+//	         the go vet suite unless -vet off
 //	test     go test -json
-//	nilaway  go.uber.org/nilaway on the module's own packages
 //
 // When compile fails, the later steps are skipped: fix those errors first.
 package main
@@ -97,26 +92,21 @@ func vetAnalyzers() []*analysis.Analyzer {
 
 // allSteps lists the steps in the order they run.
 func allSteps() []string {
-	return []string{"compile", "analyze", "lint", "test", "nilaway"}
+	return []string{"compile", "analyze", "test"}
 }
 
 type options struct {
-	dir         string
-	printConfig bool
-	fmt         bool
-	steps       []string
-	format      string
-	max         int
-	short       bool
-	vet         string
-	timeout     time.Duration
-	patterns    []string
+	dir      string
+	steps    []string
+	format   string
+	max      int
+	short    bool
+	vet      string
+	timeout  time.Duration
+	patterns []string
 }
 
 func main() {
-	if os.Getenv(golangciEnv) == "1" {
-		os.Exit(golangciMain())
-	}
 	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -129,22 +119,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "strictcheck:", err)
 		return 2
 	}
-	if opts.printConfig {
-		if _, err := stdout.Write(golangciConfig); err != nil {
-			_, _ = fmt.Fprintln(stderr, "strictcheck:", err)
-			return 2
-		}
-		return 0
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
-	if opts.fmt {
-		if err := format(ctx, opts, stdout, stderr); err != nil {
-			_, _ = fmt.Fprintln(stderr, "strictcheck:", err)
-			return 1
-		}
-		return 0
-	}
 	rep := check(ctx, opts)
 	finalize(rep, opts.max)
 	if opts.format == "text" {
@@ -175,9 +151,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&opts.format, "format", "json", "output format: json or text")
 	fs.IntVar(&opts.max, "max", 200, "maximum findings to print (0 = all); counts still cover everything")
 	fs.BoolVar(&opts.short, "short", false, "pass -short to go test")
-	fs.StringVar(&opts.vet, "vet", "auto", "run the go vet suite in the analyze step: auto (only when the lint step does not run), on, off")
-	fs.BoolVar(&opts.printConfig, "print-config", false, "print the built-in golangci-lint config and exit (save it as .golangci.yml to customize)")
-	fs.BoolVar(&opts.fmt, "fmt", false, "format the packages with the formatters in the golangci-lint config (gofumpt, goimports) and exit")
+	fs.StringVar(&opts.vet, "vet", "on", "run the go vet suite in the analyze step: on, off")
 	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "overall time limit")
 	// Expose analyzer flags as -<analyzer>.<flag>, like go vet does.
 	for _, a := range strictAnalyzers() {
@@ -204,8 +178,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	if opts.format != "json" && opts.format != "text" {
 		return opts, fmt.Errorf("unknown format %q", opts.format)
 	}
-	if opts.vet != "auto" && opts.vet != "on" && opts.vet != "off" {
-		return opts, fmt.Errorf("-vet must be auto, on or off, not %q", opts.vet)
+	if opts.vet != "on" && opts.vet != "off" {
+		return opts, fmt.Errorf("-vet must be on or off, not %q", opts.vet)
 	}
 	opts.patterns = fs.Args()
 	if len(opts.patterns) == 0 {
@@ -228,7 +202,7 @@ func check(ctx context.Context, opts options) *Report {
 	root := moduleRoot(opts)
 	r := &runner{root: root, patterns: opts.patterns, short: opts.short, analyzers: strictAnalyzers()}
 	want := func(s string) bool { return slices.Contains(opts.steps, s) }
-	if opts.vet == "on" || (opts.vet == "auto" && !want("lint")) {
+	if opts.vet == "on" {
 		r.analyzers = append(r.analyzers, vetAnalyzers()...)
 	}
 
@@ -237,15 +211,11 @@ func check(ctx context.Context, opts options) *Report {
 		rep.Steps = append(rep.Steps, s)
 		rep.Diagnostics = append(rep.Diagnostics, d...)
 	}
-	steps := map[string]stepFunc{
-		"compile": r.compile, "analyze": r.analyze, "lint": r.lint,
-		"test": r.test, "nilaway": r.nilaway,
-	}
-	// compile runs whenever a later step needs the loaded packages.
-	needLoad := want("compile") || want("analyze") || want("test") || want("nilaway")
+	steps := map[string]stepFunc{"compile": r.compile, "analyze": r.analyze, "test": r.test}
 	blocked := ""
 	for _, name := range allSteps() {
-		if name == "compile" && !needLoad || name != "compile" && !want(name) {
+		// compile always runs: every later step needs the loaded packages.
+		if name != "compile" && !want(name) {
 			continue
 		}
 		if blocked != "" {

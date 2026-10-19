@@ -4,22 +4,19 @@ Stricter Go, aimed at code written or edited by an AI model and reviewed by
 a person. It turns the mistakes models make most often into compile-time or
 check-time errors, and gives the model one tight feedback loop.
 
-It has five parts:
+It has four parts:
 
 | Part | What it does |
 |---|---|
-| `cmd/strictcheck` | Runs every check (compile, analyzers, golangci-lint, tests, NilAway) and prints **one JSON report** in one shape. golangci-lint and NilAway are built in |
+| `cmd/strictcheck` | Runs every check (compile, analyzers, tests) and prints **one JSON report** in one shape |
 | `analyzer/*` | Four custom analyzers: `argswap`, `units`, `purity`, `contracts` |
 | `contract` | `contract.Require` / `Ensure` / `Invariant`, compiled out with `-tags nocontracts` |
 | `cmd/gosym` | Read and edit code **one declaration at a time, by name**, with imports fixed automatically |
-| `cmd/strictcheck/golangci.yml` | The built-in golangci-lint v2 config: only bug-catching linters, all fatal |
 
 ## Setup
 
-Requires Go 1.27.2+. Nothing else: golangci-lint, NilAway and the
-golangci-lint configuration are compiled into `strictcheck`. If your
-installed Go is older, the `go` command downloads 1.27.2 for you (unless
-`GOTOOLCHAIN=local` is set).
+Requires Go 1.27.2+ and nothing else. If your installed Go is older, the
+`go` command downloads 1.27.2 for you (unless `GOTOOLCHAIN=local` is set).
 
 ```sh
 # in gostrict itself
@@ -35,18 +32,14 @@ go tool strictcheck -format text # the same, for people
 ```
 
 `go get -tool` records the tools in your `go.mod`, so everyone on the
-project runs the same version. It also raises your `go` line to 1.27.2 and
-adds golangci-lint's dependencies (about 200 modules) to `go.mod` as
-indirect requirements. To keep `go.mod` untouched, install the binaries
-instead and drop the `go tool` prefix:
+project runs the same version. It also raises your `go` line to 1.27.2. To
+keep `go.mod` untouched, install the binaries instead and drop the
+`go tool` prefix:
 
 ```sh
 go install github.com/tcw/gostrict/cmd/strictcheck@latest
 go install github.com/tcw/gostrict/cmd/gosym@latest
 ```
-
-The first build of `strictcheck` takes about a minute; after that it is
-cached.
 
 ## strictcheck
 
@@ -60,10 +53,8 @@ errors make every other report noise.
 | Step | What runs |
 |---|---|
 | `compile` | Loads and type-checks every package, **tests included** |
-| `analyze` | The four gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) when the `lint` step is not running it |
-| `lint` | The built-in golangci-lint v2, with the module's `.golangci.yml` if it has one and the built-in config otherwise, no issue caps |
+| `analyze` | The four gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) unless `-vet off` |
 | `test` | `go test -json -count=1`; one finding per failing leaf test, stack traces trimmed to frames inside the module |
-| `nilaway` | The built-in NilAway, restricted to the module's own packages |
 
 Output (abridged):
 
@@ -97,11 +88,9 @@ list.
 | `-format` | `json` | `json` or `text` |
 | `-max` | `200` | cap on printed findings (0 = all) |
 | `-short` | off | pass `-short` to `go test` |
-| `-vet` | `auto` | run the vet suite in `analyze`: `auto`, `on`, `off` |
+| `-vet` | `on` | run the vet suite in `analyze`: `on`, `off` |
 | `-timeout` | `10m` | overall limit |
 | `-<analyzer>.<flag>` | | analyzer flags, e.g. `-purity.allow=github.com/paulmach/orb` |
-| `-fmt` | | format the code with the config's formatters (`gofumpt`, `goimports`) and exit |
-| `-print-config` | | print the built-in golangci-lint config and exit |
 
 Exit codes: `0` all passed, `1` findings or a failed step, `2` usage error.
 
@@ -201,31 +190,6 @@ EOF
 replaced func Move in core/core.go (lines 35-39)
 ```
 
-## The golangci-lint configuration
-
-Enabled, and fatal: error handling (`errcheck`, `errorlint`, `wrapcheck`,
-`nilerr`, `nilnil`), exhaustiveness (`exhaustive` with
-`default-signifies-exhaustive: false`, `gochecksumtype`), hidden state and
-control flow (`gochecknoglobals`, `gochecknoinits`, `forbidigo` for `panic`
-and printing, `forcetypeassert`), and correctness (`govet` with nearly all
-analyzers, `staticcheck`, `unused`, `ineffassign`, `bodyclose`, `noctx`,
-SQL row/close checks, and a few more). `nolintlint` requires every
-`//nolint` to name the linter and give a reason. Formatting is `gofumpt` plus
-`goimports`; `strictcheck -fmt` applies it.
-
-The config is built into `strictcheck` and used whenever the module has no
-golangci-lint config of its own (`.golangci.yml`, `.yaml`, `.toml` or
-`.json`, in the module root or a parent directory). To change it, start from
-the built-in one:
-
-```sh
-go tool strictcheck -print-config > .golangci.yml
-```
-
-Deliberately off: line length, identifier length, comment punctuation,
-whitespace rules, complexity scores. They produce churn rather than catch
-bugs, and churn crowds out the findings that matter.
-
 ## Instructions for an AI agent
 
 Paste into the module's `CLAUDE.md` (or equivalent):
@@ -240,7 +204,7 @@ Paste into the module's `CLAUDE.md` (or equivalent):
   `go tool gosym replace <dir> <Name>` with the complete new declaration on
   stdin to change it, `gosym add`/`delete` for new or removed declarations.
   Do not rewrite whole files to change one function.
-- Do not add `//strict:allow` or `//nolint` to make a finding go away unless
+- Do not add `//strict:allow` to make a finding go away unless
   the finding is wrong for that code; the reason must say why.
 - In `//strict:pure` packages, pass time, randomness and I/O results in as
   parameters. In `//strict:units` packages, use unit types, not float64.
@@ -261,9 +225,6 @@ Paste into the module's `CLAUDE.md` (or equivalent):
 - `argswap` only looks at predeclared types, so `from, to Point` is not
   reported. That is intentional: defined types are the remedy, and flagging
   them too would make the rule too noisy to keep on.
-- The gostrict analyzers run in `strictcheck`/`strictvet`, not inside
-  golangci-lint. Wiring them in would need golangci-lint's module plugin
-  system and a custom build.
 
 ## Development
 

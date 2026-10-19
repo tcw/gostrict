@@ -25,18 +25,6 @@ func TestParsePos(t *testing.T) {
 	}
 }
 
-func TestParseGolangci(t *testing.T) {
-	data := []byte(`{"Issues":[{"FromLinter":"errcheck","Text":"unchecked","Pos":{"Filename":"cmd/x/main.go","Line":4,"Column":2}}],"Report":{}}`)
-	diags, err := parseGolangci(data, "/root")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := Diagnostic{Step: "lint", Rule: "errcheck", File: "cmd/x/main.go", Line: 4, Col: 2, Message: "unchecked"}
-	if len(diags) != 1 || diags[0] != want {
-		t.Fatalf("got %+v, want %+v", diags, want)
-	}
-}
-
 func TestParseTestEvents(t *testing.T) {
 	events := `{"Action":"run","Package":"m/p","Test":"TestA"}
 {"Action":"output","Package":"m/p","Test":"TestA","Output":"=== RUN   TestA\n"}

@@ -41,49 +41,6 @@ func parsePos(s string) (string, int, int) {
 	return file, line, col
 }
 
-// golangciOutput is the subset of golangci-lint v2 JSON output we read.
-type golangciOutput struct {
-	Issues []struct {
-		FromLinter string
-		Text       string
-		Pos        struct {
-			Filename string
-			Line     int
-			Column   int
-		}
-	}
-}
-
-// parseGolangci converts golangci-lint JSON output into diagnostics.
-// Filenames in that output are relative to the directory it ran in.
-func parseGolangci(data []byte, root rootDir) ([]Diagnostic, error) {
-	var out golangciOutput
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("parse golangci-lint JSON: %w", err)
-	}
-	diags := make([]Diagnostic, 0, len(out.Issues))
-	for _, is := range out.Issues {
-		file := is.Pos.Filename
-		if file != "" && !filepath.IsAbs(file) {
-			file = filepath.Join(string(root), file)
-		}
-		msg := is.Text
-		switch is.FromLinter {
-		case "gofumpt", "goimports", "gofmt", "gci", "golines":
-			msg += "; run strictcheck -fmt to fix"
-		}
-		diags = append(diags, Diagnostic{
-			Step:    "lint",
-			Rule:    is.FromLinter,
-			File:    root.rel(file),
-			Line:    is.Pos.Line,
-			Col:     is.Pos.Column,
-			Message: msg,
-		})
-	}
-	return diags, nil
-}
-
 // testKey identifies a test (or, with an empty test, a package) in go test output.
 type testKey struct{ pkg, test string }
 

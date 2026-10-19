@@ -6,14 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"go.uber.org/nilaway"
-	nilawayconfig "go.uber.org/nilaway/config"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/checker"
 	"golang.org/x/tools/go/packages"
@@ -150,37 +147,6 @@ func (r *runner) runAnalyzers(analyzers []*analysis.Analyzer) ([]Diagnostic, err
 	return diags, nil
 }
 
-// lint runs the golangci-lint built into strictcheck, by running this
-// binary again with golangciEnv set.
-func (r *runner) lint(ctx context.Context) ([]Diagnostic, string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return nil, "", fmt.Errorf("find strictcheck binary: %w", err)
-	}
-	cfg, source, cleanup, err := golangciConfigFile(r.root)
-	defer cleanup()
-	if err != nil {
-		return nil, "", err
-	}
-	detail := "golangci-lint " + golangciVersion() + ", " + source
-	args := append([]string{
-		"run", "--config=" + cfg, "--output.json.path=stdout", "--show-stats=false",
-		"--path-mode=abs", "--max-issues-per-linter=0", "--max-same-issues=0",
-	}, r.patterns...)
-	stdout, stderr, code, err := runEnv(ctx, r.root, []string{golangciEnv + "=1"}, self, args...)
-	if err != nil {
-		return nil, "", err
-	}
-	if code != 0 && code != 1 {
-		return nil, "", fmt.Errorf("golangci-lint exited %d: %s", code, tail(stderr, 15))
-	}
-	if len(bytes.TrimSpace(stdout)) == 0 {
-		return nil, detail, nil
-	}
-	diags, err := parseGolangci(stdout, r.root)
-	return diags, detail, err
-}
-
 // test runs go test -json and reports failing tests.
 func (r *runner) test(ctx context.Context) ([]Diagnostic, string, error) {
 	args := []string{"test", "-json", "-count=1"}
@@ -202,34 +168,11 @@ func (r *runner) test(ctx context.Context) ([]Diagnostic, string, error) {
 	return diags, "", nil
 }
 
-// nilaway runs NilAway in process over the module's own packages.
-func (r *runner) nilaway(_ context.Context) ([]Diagnostic, string, error) {
-	flags := map[string]string{nilawayconfig.PrettyPrintFlag: "false"}
-	if r.modulePath != "" {
-		flags[nilawayconfig.IncludePkgsFlag] = r.modulePath
-	}
-	for name, value := range flags {
-		if err := nilawayconfig.Analyzer.Flags.Set(name, value); err != nil {
-			return nil, "", fmt.Errorf("configure nilaway: %w", err)
-		}
-	}
-	diags, err := r.runAnalyzers([]*analysis.Analyzer{nilaway.Analyzer})
-	return diags, "", err
-}
-
 // run executes a command in dir and returns its output and exit code. err
 // is set only when the command could not be started or was cancelled.
 func run(ctx context.Context, dir rootDir, name string, args ...string) ([]byte, []byte, int, error) {
-	return runEnv(ctx, dir, nil, name, args...)
-}
-
-// runEnv is run with extra environment variables (KEY=value).
-func runEnv(ctx context.Context, dir rootDir, env []string, name string, args ...string) ([]byte, []byte, int, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = string(dir)
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
