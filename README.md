@@ -101,6 +101,7 @@ errors make every other report noise.
 |---|---|
 | `compile` | Loads and type-checks every package, **tests included** |
 | `analyze` | The five gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) unless `-vet off` |
+| `review` | Compares with the default branch and flags changes a person should look at; advisory, see [below](#the-review-step) |
 | `test` | `go test -json -count=1`; one finding per failing leaf test, stack traces trimmed to frames inside the module |
 
 Output (abridged):
@@ -112,9 +113,10 @@ Output (abridged):
   "steps": [
     {"name": "compile", "status": "pass", "detail": "3 packages", "count": 0, "ms": 780},
     {"name": "analyze", "status": "fail", "detail": "5 analyzers", "count": 2, "ms": 3},
+    {"name": "review", "status": "warn", "detail": "against origin/main, 4 files changed", "count": 1, "ms": 21, "advisory": true},
     {"name": "test", "status": "fail", "count": 1, "ms": 236}
   ],
-  "counts": {"argswap": 1, "purity": 1, "test-failure": 1},
+  "counts": {"argswap": 1, "purity": 1, "test-skip": 1, "test-failure": 1},
   "diagnostics": [
     {"step": "analyze", "rule": "argswap", "file": "core/core.go", "line": 36, "col": 20,
      "message": "parameters dx, dy of Move share type float64, so swapped arguments compile silently; ..."},
@@ -136,10 +138,34 @@ list.
 | `-max` | `200` | cap on printed findings (0 = all) |
 | `-short` | off | pass `-short` to `go test` |
 | `-vet` | `on` | run the vet suite in `analyze`: `on`, `off` |
+| `-base` | default branch | git ref `review` compares with; default `origin/HEAD`, else `origin/main`, `origin/master`, `main`, `master` |
+| `-review` | `warn` | `warn`: review findings are reported but leave `ok` true; `fail`: they fail the run |
 | `-timeout` | `10m` | overall limit |
 | `-<analyzer>.<flag>` | | analyzer flags, e.g. `-purity.allow=github.com/paulmach/orb` |
 
 Exit codes: `0` all passed, `1` findings or a failed step, `2` usage error.
+
+### The review step
+
+A linter sees one snapshot, so it cannot tell that a check passes because
+it was weakened. `review` compares the working tree (uncommitted and
+untracked files included) with the merge base of the default branch, and
+reports changes that make checks pass without fixing anything:
+
+| Rule | Reports |
+|---|---|
+| `suppression` | new `//nolint`, `//strict:allow`, `//lint:ignore` or `//lint:file-ignore` comments |
+| `test-removed` | `Test`, `Benchmark`, `Fuzz` and `Example` functions that are gone from their directory (moving one to another file is fine) |
+| `test-skip` | new `t.Skip`, `Skipf` or `SkipNow` calls in test files |
+| `marker-removed` | a `//strict:pure`, `//strict:units` or `//strict:contracts` marker the package no longer has |
+| `generated-edit` | changes to files marked `Code generated ... DO NOT EDIT`, which the next run of the generator discards unless it produced them |
+| `lint-config` | changes to `.golangci.yml` (or `.yaml`, `.toml`, `.json`) |
+
+Each of these is sometimes right, so by default the step is advisory: its
+status is `warn` and `ok` stays `true`. The findings are for the person
+reviewing the change; `-review fail` makes them fail the run instead.
+`testdata` directories are skipped. Outside a git repository, or with no
+default branch to compare with, the step is skipped.
 
 ## The analyzers
 
@@ -256,6 +282,9 @@ Paste into the module's `CLAUDE.md` (or equivalent):
 - Before saying a task is done, run all three and fix what they report:
   `go tool strictcheck`, `golangci-lint run ./...` and
   `nilaway -include-pkgs=<module path> ./...`.
+- List every finding of strictcheck's `review` step in your summary to the
+  user, each with one line on why the change is right. Do not leave them out
+  because `ok` is `true`.
 - Read and edit by declaration: `go tool gosym show <dir> <Name>` to read,
   `go tool gosym replace <dir> <Name>` with the complete new declaration on
   stdin to change it, `gosym add`/`delete` for new or removed declarations.

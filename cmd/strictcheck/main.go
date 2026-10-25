@@ -93,7 +93,7 @@ func vetAnalyzers() []*analysis.Analyzer {
 
 // allSteps lists the steps in the order they run.
 func allSteps() []string {
-	return []string{"compile", "analyze", "test"}
+	return []string{"compile", "analyze", "review", "test"}
 }
 
 type options struct {
@@ -103,6 +103,8 @@ type options struct {
 	max      int
 	short    bool
 	vet      string
+	base     string
+	review   string
 	timeout  time.Duration
 	patterns []string
 }
@@ -153,6 +155,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.IntVar(&opts.max, "max", 200, "maximum findings to print (0 = all); counts still cover everything")
 	fs.BoolVar(&opts.short, "short", false, "pass -short to go test")
 	fs.StringVar(&opts.vet, "vet", "on", "run the go vet suite in the analyze step: on, off")
+	fs.StringVar(&opts.base, "base", "", "git ref the review step compares with (default: origin/HEAD, else main or master)")
+	fs.StringVar(&opts.review, "review", "warn", "review findings: warn (reported, ok unaffected) or fail")
 	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "overall time limit")
 	// Expose analyzer flags as -<analyzer>.<flag>, like go vet does.
 	for _, a := range strictAnalyzers() {
@@ -182,6 +186,9 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	if opts.vet != "on" && opts.vet != "off" {
 		return opts, fmt.Errorf("-vet must be on or off, not %q", opts.vet)
 	}
+	if opts.review != "warn" && opts.review != "fail" {
+		return opts, fmt.Errorf("-review must be warn or fail, not %q", opts.review)
+	}
 	opts.patterns = fs.Args()
 	if len(opts.patterns) == 0 {
 		opts.patterns = []string{"./..."}
@@ -201,7 +208,7 @@ func moduleRoot(opts options) rootDir {
 // check runs the selected steps in order and collects their results.
 func check(ctx context.Context, opts options) *Report {
 	root := moduleRoot(opts)
-	r := &runner{root: root, patterns: opts.patterns, short: opts.short, analyzers: strictAnalyzers()}
+	r := &runner{root: root, patterns: opts.patterns, short: opts.short, base: opts.base, analyzers: strictAnalyzers()}
 	want := func(s string) bool { return slices.Contains(opts.steps, s) }
 	if opts.vet == "on" {
 		r.analyzers = append(r.analyzers, vetAnalyzers()...)
@@ -212,7 +219,7 @@ func check(ctx context.Context, opts options) *Report {
 		rep.Steps = append(rep.Steps, s)
 		rep.Diagnostics = append(rep.Diagnostics, d...)
 	}
-	steps := map[string]stepFunc{"compile": r.compile, "analyze": r.analyze, "test": r.test}
+	steps := map[string]stepFunc{"compile": r.compile, "analyze": r.analyze, "review": r.review, "test": r.test}
 	blocked := ""
 	for _, name := range allSteps() {
 		// compile always runs: every later step needs the loaded packages.
@@ -224,6 +231,12 @@ func check(ctx context.Context, opts options) *Report {
 			continue
 		}
 		s, d := timed(ctx, name, steps[name])
+		if name == "review" && opts.review == "warn" {
+			s.Advisory = true
+			if s.Status == statusFail {
+				s.Status = statusWarn
+			}
+		}
 		add(s, d)
 		if name == "compile" && s.Status != statusPass {
 			blocked = "compile step did not pass; fix it first"

@@ -22,6 +22,7 @@ type runner struct {
 	root      rootDir
 	patterns  []string
 	short     bool
+	base      string // git ref the review step compares with; "" finds the default branch
 	analyzers []*analysis.Analyzer
 
 	pkgs       []*packages.Package
@@ -38,7 +39,11 @@ func timed(ctx context.Context, name string, f stepFunc) (Step, []Diagnostic) {
 	start := time.Now()
 	diags, detail, err := f(ctx)
 	s := Step{Name: name, Status: statusPass, Detail: detail, Millis: time.Since(start).Milliseconds()}
+	var skip errSkip
 	switch {
+	case errors.As(err, &skip):
+		s.Status = statusSkipped
+		s.Detail = skip.reason
 	case err != nil:
 		s.Status = statusError
 		s.Detail = err.Error()
