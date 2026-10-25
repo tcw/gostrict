@@ -38,3 +38,15 @@ jobs:
 
       - name: strictcheck (the repository checks itself)
         run: go run ./cmd/strictcheck -format text -steps compile,analyze
+
+      # Built with the Go from go.mod: golangci-lint and NilAway refuse
+      # modules newer than the Go that built them.
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          golangci-lint run ./...
+
+      - name: NilAway
+        run: |
+          go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260918162853-acb8859b9031
+          nilaway -include-pkgs=github.com/tcw/gostrict ./...

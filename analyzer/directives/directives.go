@@ -70,7 +70,7 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 		}
 	}
-	return nil, nil
+	return nil, nil //nolint:nilnil // the analyzer has no ResultType, so there is no result to return
 }
 
 func checkComment(pass *analysis.Pass, f *ast.File, known map[string]rule, c *ast.Comment, header bool) {
