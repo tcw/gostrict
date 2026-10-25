@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/types"
+	"reflect"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -43,15 +44,16 @@ type config struct {
 
 func newAnalyzer() *analysis.Analyzer {
 	cfg := &config{pkg: "github.com/tcw/gostrict/contract"}
-	a := &analysis.Analyzer{Name: "contracts", Doc: doc}
+	a := &analysis.Analyzer{Name: "contracts", Doc: doc, ResultType: reflect.TypeFor[*directive.Used]()}
 	a.Flags.StringVar(&cfg.pkg, "pkg", cfg.pkg, "import path of the contract package")
 	a.Run = func(pass *analysis.Pass) (any, error) { return run(pass, cfg) }
 	return a
 }
 
 func run(pass *analysis.Pass, cfg *config) (any, error) {
+	used := directive.NewUsed()
 	if !directive.Package(pass.Files, "contracts") {
-		return nil, nil
+		return used, nil
 	}
 	for _, f := range pass.Files {
 		if strings.HasSuffix(pass.Fset.Position(f.Pos()).Filename, "_test.go") {
@@ -59,14 +61,14 @@ func run(pass *analysis.Pass, cfg *config) (any, error) {
 		}
 		for _, d := range f.Decls {
 			if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil {
-				checkFunc(pass, cfg, fd)
+				checkFunc(pass, cfg, used, fd)
 			}
 		}
 	}
-	return nil, nil
+	return used, nil
 }
 
-func checkFunc(pass *analysis.Pass, cfg *config, fd *ast.FuncDecl) {
+func checkFunc(pass *analysis.Pass, cfg *config, used *directive.Used, fd *ast.FuncDecl) {
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
 			if name := contractCall(pass, cfg, call); name != "" {
@@ -78,7 +80,7 @@ func checkFunc(pass *analysis.Pass, cfg *config, fd *ast.FuncDecl) {
 	if !needsPrecondition(fd) || startsWithRequire(pass, cfg, fd) {
 		return
 	}
-	if directive.Suppressed(pass, "contracts", fd.Doc) {
+	if used.Suppressed(pass, "contracts", fd.Doc) {
 		return
 	}
 	pass.ReportRangef(fd.Name,

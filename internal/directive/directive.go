@@ -14,6 +14,7 @@ package directive
 import (
 	"go/ast"
 	"go/token"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -47,9 +48,9 @@ type Suppression struct {
 	Reason string
 }
 
-// parseAllow parses one comment line. It returns ok=false when the line is
+// ParseAllow parses one comment line. It returns ok=false when the line is
 // not a //strict:allow directive.
-func parseAllow(c *ast.Comment) (Suppression, bool) {
+func ParseAllow(c *ast.Comment) (Suppression, bool) {
 	rest, ok := strings.CutPrefix(c.Text, prefix+"allow")
 	if !ok {
 		return Suppression{}, false
@@ -66,29 +67,43 @@ func parseAllow(c *ast.Comment) (Suppression, bool) {
 	return s, true
 }
 
+// Used records the //strict:allow directives that suppressed a finding.
+// Each analyzer that honors suppressions returns one as its result, so the
+// directives analyzer can report the directives that suppress nothing.
+type Used struct {
+	pos map[token.Pos]bool
+}
+
+// NewUsed returns an empty Used.
+func NewUsed() *Used {
+	return &Used{pos: map[token.Pos]bool{}}
+}
+
+// Has reports whether the directive at pos suppressed a finding.
+func (u *Used) Has(pos token.Pos) bool {
+	return u.pos[pos]
+}
+
 // Suppressed reports whether any of the comment groups holds a
-// //strict:allow directive for rule. A matching directive without a reason
+// //strict:allow directive for rule, and records the directive as used.
+// Call it only once a finding exists. A matching directive without a reason
 // still suppresses the finding, but is itself reported, so the exception
 // cannot stay unexplained.
-func Suppressed(pass *analysis.Pass, rule string, groups ...*ast.CommentGroup) bool {
+func (u *Used) Suppressed(pass *analysis.Pass, rule string, groups ...*ast.CommentGroup) bool {
 	for _, cg := range groups {
 		if cg == nil {
 			continue
 		}
 		for _, c := range cg.List {
-			s, ok := parseAllow(c)
-			if !ok {
+			s, ok := ParseAllow(c)
+			if !ok || !slices.Contains(s.Rules, rule) {
 				continue
 			}
-			for _, r := range s.Rules {
-				if r != rule {
-					continue
-				}
-				if strings.TrimSpace(s.Reason) == "" {
-					pass.Reportf(s.Pos, "%s: //strict:allow %s needs a reason after the rule name, e.g. //strict:allow %s order does not matter here", rule, rule, rule)
-				}
-				return true
+			if !u.pos[s.Pos] && strings.TrimSpace(s.Reason) == "" {
+				pass.Reportf(s.Pos, "%s: //strict:allow %s needs a reason after the rule name, e.g. //strict:allow %s order does not matter here", rule, rule, rule)
 			}
+			u.pos[s.Pos] = true
+			return true
 		}
 	}
 	return false

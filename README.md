@@ -9,7 +9,7 @@ It has four parts:
 | Part | What it does |
 |---|---|
 | `cmd/strictcheck` | Runs every check (compile, analyzers, tests) and prints **one JSON report** in one shape |
-| `analyzer/*` | Four custom analyzers: `argswap`, `units`, `purity`, `contracts` |
+| `analyzer/*` | Five custom analyzers: `argswap`, `units`, `purity`, `contracts`, `directives` |
 | `contract` | `contract.Require` / `Ensure` / `Invariant`, compiled out with `-tags nocontracts` |
 | `cmd/gosym` | Read and edit code **one declaration at a time, by name**, with imports fixed automatically |
 
@@ -53,7 +53,7 @@ errors make every other report noise.
 | Step | What runs |
 |---|---|
 | `compile` | Loads and type-checks every package, **tests included** |
-| `analyze` | The four gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) unless `-vet off` |
+| `analyze` | The five gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) unless `-vet off` |
 | `test` | `go test -json -count=1`; one finding per failing leaf test, stack traces trimmed to frames inside the module |
 
 Output (abridged):
@@ -64,7 +64,7 @@ Output (abridged):
   "root": "/home/me/project",
   "steps": [
     {"name": "compile", "status": "pass", "detail": "3 packages", "count": 0, "ms": 780},
-    {"name": "analyze", "status": "fail", "detail": "4 analyzers", "count": 2, "ms": 3},
+    {"name": "analyze", "status": "fail", "detail": "5 analyzers", "count": 2, "ms": 3},
     {"name": "test", "status": "fail", "count": 1, "ms": 236}
   ],
   "counts": {"argswap": 1, "purity": 1, "test-failure": 1},
@@ -114,6 +114,7 @@ package route
 | `units` | `//strict:units` | Raw `float32`/`float64` in exported signatures and exported struct fields, also inside slices, maps and pointers. `-units.ints` adds integer types, except byte slices and arrays (`[]byte`, `[32]byte`), which are data. |
 | `purity` | `//strict:pure` | Imports that do I/O or add nondeterminism or concurrency (`os`, `net`, `net/http`, `log`, `context`, `sync`, `math/rand`, ...); imports of non-standard packages not themselves marked pure; `time.Now`, `time.Sleep`, `fmt.Println` and friends; `go` statements; package-level variables other than error sentinels. |
 | `contracts` | `//strict:contracts` | Exported functions with parameters whose body does not start with `contract.Require`; contract calls whose condition is constant `true` or whose message is empty or not a constant string. |
+| `directives` | every package, tests included | `//strict:` comments that have no effect: unknown directives (`//strict:puer`), unknown rules in `//strict:allow`, markers below the package clause or with text after them, `// strict:pure` (the space makes it an ordinary comment), and `//strict:allow` directives that suppress no finding. |
 
 `purity` works across packages: each pure package exports a fact, so a pure
 package importing an unmarked package from your module is reported.
@@ -132,6 +133,12 @@ func Max(a, b int) int
 ```
 
 Several rules can share one directive: `//strict:allow argswap,units <reason>`.
+
+A suppression that no longer suppresses anything is reported by
+`directives`, so exceptions do not outlive the code they excused. That
+includes one in the wrong place: it must be in the doc comment of the
+declaration with the finding (or, for struct fields and imports, on the
+field or import itself).
 
 ### Running the analyzers alone
 

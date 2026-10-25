@@ -66,12 +66,13 @@ import (
 
 	"github.com/tcw/gostrict/analyzer/argswap"
 	"github.com/tcw/gostrict/analyzer/contracts"
+	"github.com/tcw/gostrict/analyzer/directives"
 	"github.com/tcw/gostrict/analyzer/purity"
 	"github.com/tcw/gostrict/analyzer/units"
 )
 
 func strictAnalyzers() []*analysis.Analyzer {
-	return []*analysis.Analyzer{argswap.Analyzer, units.Analyzer, purity.Analyzer, contracts.Analyzer}
+	return []*analysis.Analyzer{argswap.Analyzer, units.Analyzer, purity.Analyzer, contracts.Analyzer, directives.Analyzer}
 }
 
 // vetAnalyzers is the go vet suite plus nilness and unusedwrite.

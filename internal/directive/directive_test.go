@@ -52,7 +52,7 @@ func TestParseAllow(t *testing.T) {
 		{"//strict:pure", false, nil, ""},
 	}
 	for _, tt := range tests {
-		s, ok := parseAllow(&ast.Comment{Text: tt.text})
+		s, ok := ParseAllow(&ast.Comment{Text: tt.text})
 		if ok != tt.ok {
 			t.Errorf("%q: ok = %v, want %v", tt.text, ok, tt.ok)
 			continue

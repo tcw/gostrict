@@ -5,6 +5,7 @@ package units
 import (
 	"go/ast"
 	"go/types"
+	"reflect"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -39,15 +40,16 @@ type config struct {
 
 func newAnalyzer() *analysis.Analyzer {
 	cfg := &config{}
-	a := &analysis.Analyzer{Name: "units", Doc: doc}
+	a := &analysis.Analyzer{Name: "units", Doc: doc, ResultType: reflect.TypeFor[*directive.Used]()}
 	a.Flags.BoolVar(&cfg.ints, "ints", false, "also report raw integer types")
 	a.Run = func(pass *analysis.Pass) (any, error) { return run(pass, cfg) }
 	return a
 }
 
 func run(pass *analysis.Pass, cfg *config) (any, error) {
+	used := directive.NewUsed()
 	if !directive.Package(pass.Files, "units") {
-		return nil, nil
+		return used, nil
 	}
 	for _, f := range pass.Files {
 		if strings.HasSuffix(pass.Fset.Position(f.Pos()).Filename, "_test.go") {
@@ -56,16 +58,16 @@ func run(pass *analysis.Pass, cfg *config) (any, error) {
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *ast.FuncDecl:
-				checkFunc(pass, cfg, d)
+				checkFunc(pass, cfg, used, d)
 			case *ast.GenDecl:
-				checkTypes(pass, cfg, d)
+				checkTypes(pass, cfg, used, d)
 			}
 		}
 	}
-	return nil, nil
+	return used, nil
 }
 
-func checkFunc(pass *analysis.Pass, cfg *config, fd *ast.FuncDecl) {
+func checkFunc(pass *analysis.Pass, cfg *config, used *directive.Used, fd *ast.FuncDecl) {
 	if !fd.Name.IsExported() || (fd.Recv != nil && !exportedRecv(fd.Recv)) {
 		return
 	}
@@ -76,7 +78,7 @@ func checkFunc(pass *analysis.Pass, cfg *config, fd *ast.FuncDecl) {
 		for _, field := range fl.List {
 			t := pass.TypesInfo.TypeOf(field.Type)
 			if raw := rawUnit(t, cfg.ints); raw != "" {
-				if directive.Suppressed(pass, "units", fd.Doc) {
+				if used.Suppressed(pass, "units", fd.Doc) {
 					return
 				}
 				pass.ReportRangef(field.Type,
@@ -89,7 +91,7 @@ func checkFunc(pass *analysis.Pass, cfg *config, fd *ast.FuncDecl) {
 	check(fd.Type.Results, "result")
 }
 
-func checkTypes(pass *analysis.Pass, cfg *config, gd *ast.GenDecl) {
+func checkTypes(pass *analysis.Pass, cfg *config, used *directive.Used, gd *ast.GenDecl) {
 	for _, spec := range gd.Specs {
 		ts, ok := spec.(*ast.TypeSpec)
 		if !ok || !ts.Name.IsExported() {
@@ -104,7 +106,7 @@ func checkTypes(pass *analysis.Pass, cfg *config, gd *ast.GenDecl) {
 				continue
 			}
 			raw := rawUnit(pass.TypesInfo.TypeOf(field.Type), cfg.ints)
-			if raw == "" || directive.Suppressed(pass, "units", gd.Doc, ts.Doc, field.Doc, field.Comment) {
+			if raw == "" || used.Suppressed(pass, "units", gd.Doc, ts.Doc, field.Doc, field.Comment) {
 				continue
 			}
 			pass.ReportRangef(field.Type,
