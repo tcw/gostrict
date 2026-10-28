@@ -21,8 +21,8 @@ It has four parts:
 
 ## Setup
 
-gostrict requires Go 1.27.2+ and nothing else. If your installed Go is
-older, the `go` command downloads 1.27.2 for you (unless
+gostrict requires Go 1.27.3+ and nothing else. If your installed Go is
+older, the `go` command downloads 1.27.3 for you (unless
 `GOTOOLCHAIN=local` is set). golangci-lint and NilAway are installed
 separately, [below](#alongside-golangci-lint-and-nilaway).
 
@@ -40,7 +40,7 @@ go tool strictcheck -format text # the same, for people
 ```
 
 `go get -tool` records the tools in your `go.mod`, so everyone on the
-project runs the same version. It also raises your `go` line to 1.27.2. To
+project runs the same version. It also raises your `go` line to 1.27.3. To
 keep `go.mod` untouched, install the binaries instead and drop the
 `go tool` prefix:
 
@@ -62,8 +62,8 @@ Each tool covers a different kind of mistake:
 Install both with a Go at least as new as your module's `go` line:
 
 ```sh
-GOTOOLCHAIN=go1.27.2 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-GOTOOLCHAIN=go1.27.2 go install go.uber.org/nilaway/cmd/nilaway@latest
+GOTOOLCHAIN=go1.27.3 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+GOTOOLCHAIN=go1.27.3 go install go.uber.org/nilaway/cmd/nilaway@latest
 ```
 
 Without `GOTOOLCHAIN`, `go install` may build them with an older Go, and
