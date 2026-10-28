@@ -6,6 +6,7 @@ package argswap
 import (
 	"go/ast"
 	"go/types"
+	"reflect"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -40,9 +41,10 @@ type config struct {
 func newAnalyzer() *analysis.Analyzer {
 	cfg := &config{ignore: "Less,Swap"}
 	a := &analysis.Analyzer{
-		Name:     "argswap",
-		Doc:      doc,
-		Requires: []*analysis.Analyzer{inspect.Analyzer},
+		Name:       "argswap",
+		Doc:        doc,
+		Requires:   []*analysis.Analyzer{inspect.Analyzer},
+		ResultType: reflect.TypeFor[*directive.Used](),
 	}
 	a.Flags.StringVar(&cfg.ignore, "ignore", cfg.ignore, "comma-separated method names to skip (interface methods whose signature you do not control)")
 	a.Run = func(pass *analysis.Pass) (any, error) { return run(pass, cfg) }
@@ -62,9 +64,10 @@ func run(pass *analysis.Pass, cfg *config) (any, error) {
 			ignored[n] = true
 		}
 	}
+	used := directive.NewUsed()
 	insp, ok := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	if !ok {
-		return nil, nil
+		return used, nil
 	}
 	insp.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
 		fd, ok := n.(*ast.FuncDecl)
@@ -76,7 +79,7 @@ func run(pass *analysis.Pass, cfg *config) (any, error) {
 		}
 		params := flatten(pass, fd.Type.Params)
 		for _, r := range runs(params) {
-			if directive.Suppressed(pass, "argswap", fd.Doc) {
+			if used.Suppressed(pass, "argswap", fd.Doc) {
 				return
 			}
 			names := make([]string, len(r))
@@ -88,7 +91,7 @@ func run(pass *analysis.Pass, cfg *config) (any, error) {
 				strings.Join(names, ", "), fd.Name.Name, types.TypeString(r[0].typ, types.RelativeTo(pass.Pkg)))
 		}
 	})
-	return nil, nil
+	return used, nil
 }
 
 func isTestFile(pass *analysis.Pass, n ast.Node) bool {

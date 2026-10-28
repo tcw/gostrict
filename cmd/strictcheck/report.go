@@ -25,6 +25,7 @@ const (
 	statusFail    = "fail"
 	statusSkipped = "skipped"
 	statusError   = "error" // the step itself could not run
+	statusWarn    = "warn"  // an advisory step found something; ok is unaffected
 )
 
 // Step records the outcome of one stage of the check.
@@ -34,6 +35,9 @@ type Step struct {
 	Detail string `json:"detail,omitempty"`
 	Count  int    `json:"count"`
 	Millis int64  `json:"ms"`
+	// Advisory steps report findings for a person to look at; they set
+	// status warn instead of fail and do not make the report fail.
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // Report is the single JSON document strictcheck prints.
@@ -101,6 +105,9 @@ func finalize(r *Report, maxDiags int) {
 		s.Count = perStep[s.Name]
 		if s.Count > 0 && s.Status == statusPass {
 			s.Status = statusFail
+			if s.Advisory {
+				s.Status = statusWarn
+			}
 		}
 	}
 	if maxDiags > 0 && len(r.Diagnostics) > maxDiags {
@@ -110,7 +117,7 @@ func finalize(r *Report, maxDiags int) {
 	if r.Diagnostics == nil {
 		r.Diagnostics = []Diagnostic{}
 	}
-	r.OK = len(r.Counts) == 0
+	r.OK = true
 	for _, s := range r.Steps {
 		if s.Status == statusFail || s.Status == statusError {
 			r.OK = false

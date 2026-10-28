@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -50,9 +51,10 @@ type config struct {
 func newAnalyzer() *analysis.Analyzer {
 	cfg := &config{allow: "github.com/tcw/gostrict/contract"}
 	a := &analysis.Analyzer{
-		Name:      "purity",
-		Doc:       doc,
-		FactTypes: []analysis.Fact{new(isPure)},
+		Name:       "purity",
+		Doc:        doc,
+		FactTypes:  []analysis.Fact{new(isPure)},
+		ResultType: reflect.TypeFor[*directive.Used](),
 	}
 	a.Flags.StringVar(&cfg.allow, "allow", cfg.allow, "comma-separated import path prefixes to treat as pure (e.g. third-party geometry libraries)")
 	a.Run = func(pass *analysis.Pass) (any, error) { return run(pass, cfg) }
@@ -119,16 +121,18 @@ func forbiddenCalls() map[string]map[string]string {
 
 type checker struct {
 	pass  *analysis.Pass
+	used  *directive.Used
 	allow []string
 	calls map[string]map[string]string
 }
 
 func run(pass *analysis.Pass, cfg *config) (any, error) {
+	used := directive.NewUsed()
 	if !directive.Package(pass.Files, "pure") {
-		return nil, nil
+		return used, nil
 	}
 	pass.ExportPackageFact(new(isPure))
-	c := &checker{pass: pass, calls: forbiddenCalls()}
+	c := &checker{pass: pass, used: used, calls: forbiddenCalls()}
 	for _, p := range strings.Split(cfg.allow, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			c.allow = append(c.allow, p)
@@ -147,7 +151,7 @@ func run(pass *analysis.Pass, cfg *config) (any, error) {
 			}
 		}
 	}
-	return nil, nil
+	return used, nil
 }
 
 func (c *checker) genDecl(gd *ast.GenDecl) {
@@ -177,7 +181,7 @@ func (c *checker) importSpec(gd *ast.GenDecl, is *ast.ImportSpec) {
 	} else if !c.importedIsPure(path) {
 		msg = fmt.Sprintf("imports %q, which is not marked //strict:pure; mark it pure if it has no side effects, list it in -purity.allow, or move the dependency to the shell", path)
 	}
-	if msg == "" || directive.Suppressed(c.pass, "purity", gd.Doc, is.Doc, is.Comment) {
+	if msg == "" || c.used.Suppressed(c.pass, "purity", gd.Doc, is.Doc, is.Comment) {
 		return
 	}
 	c.pass.ReportRangef(is, "package %s is //strict:pure but %s", c.pass.Pkg.Name(), msg)
@@ -217,7 +221,7 @@ func (c *checker) globalVar(gd *ast.GenDecl, vs *ast.ValueSpec) {
 		if obj == nil || isErrorType(obj.Type()) {
 			continue
 		}
-		if directive.Suppressed(c.pass, "purity", gd.Doc, vs.Doc, vs.Comment) {
+		if c.used.Suppressed(c.pass, "purity", gd.Doc, vs.Doc, vs.Comment) {
 			return
 		}
 		c.pass.ReportRangef(id, "package %s is //strict:pure but declares package-level var %s, which is mutable global state; use a const, a func returning the value, or pass it in", c.pass.Pkg.Name(), id.Name)
@@ -238,7 +242,7 @@ func (c *checker) funcDecl(fd *ast.FuncDecl) {
 		if suppressed {
 			return
 		}
-		if directive.Suppressed(c.pass, "purity", fd.Doc) {
+		if c.used.Suppressed(c.pass, "purity", fd.Doc) {
 			suppressed = true
 			return
 		}

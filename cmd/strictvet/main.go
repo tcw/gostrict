@@ -1,5 +1,5 @@
 // Command strictvet runs the gostrict analyzers (argswap, units, purity,
-// contracts) on Go packages.
+// contracts, directives) on Go packages.
 //
 //	strictvet ./...
 //	go vet -vettool=$(command -v strictvet) ./...
@@ -12,10 +12,11 @@ import (
 
 	"github.com/tcw/gostrict/analyzer/argswap"
 	"github.com/tcw/gostrict/analyzer/contracts"
+	"github.com/tcw/gostrict/analyzer/directives"
 	"github.com/tcw/gostrict/analyzer/purity"
 	"github.com/tcw/gostrict/analyzer/units"
 )
 
 func main() {
-	multichecker.Main(argswap.Analyzer, units.Analyzer, purity.Analyzer, contracts.Analyzer)
+	multichecker.Main(argswap.Analyzer, units.Analyzer, purity.Analyzer, contracts.Analyzer, directives.Analyzer)
 }
