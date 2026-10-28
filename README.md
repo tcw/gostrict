@@ -10,7 +10,8 @@ already catch ignored errors, missed enum cases, dead code, leftover TODOs
 and nil dereferences; gostrict covers what they do not. Run all three; see
 [Alongside golangci-lint and NilAway](#alongside-golangci-lint-and-nilaway).
 
-It has four parts:
+It has four parts, plus [hooks](#enforcing-the-rules-in-claude-code) that
+make Claude Code use them:
 
 | Part | What it does |
 |---|---|
@@ -101,8 +102,11 @@ errors make every other report noise.
 |---|---|
 | `compile` | Loads and type-checks every package, **tests included** |
 | `analyze` | The five gostrict analyzers in process, plus the `go vet` suite (and `nilness`, `unusedwrite`) unless `-vet off` |
+| `format` | Files `gofmt` would change, including files left out by build constraints; generated files are skipped |
+| `tidy` | Changes `go mod tidy` would make to `go.mod` and `go.sum` |
 | `review` | Compares with the default branch and flags changes a person should look at; advisory, see [below](#the-review-step) |
-| `test` | `go test -json -count=1`; one finding per failing leaf test, stack traces trimmed to frames inside the module |
+| `test` | `go test -json -count=1 -shuffle=<seed> -race`; one finding per failing leaf test, stack traces and race reports trimmed to frames inside the module |
+| `coverage` | Changed functions that no test runs; advisory, see [below](#the-coverage-step) |
 
 Output (abridged):
 
@@ -137,9 +141,11 @@ list.
 | `-format` | `json` | `json` or `text` |
 | `-max` | `200` | cap on printed findings (0 = all) |
 | `-short` | off | pass `-short` to `go test` |
+| `-race` | on | run tests with the race detector; skipped, and said so in the step detail, when cgo is off (no C compiler) |
 | `-vet` | `on` | run the vet suite in `analyze`: `on`, `off` |
 | `-base` | default branch | git ref `review` compares with; default `origin/HEAD`, else `origin/main`, `origin/master`, `main`, `master` |
 | `-review` | `warn` | `warn`: review findings are reported but leave `ok` true; `fail`: they fail the run |
+| `-coverage` | `warn` | the same, for coverage findings |
 | `-timeout` | `10m` | overall limit |
 | `-<analyzer>.<flag>` | | analyzer flags, e.g. `-purity.allow=github.com/paulmach/orb` |
 
@@ -157,6 +163,9 @@ reports changes that make checks pass without fixing anything:
 | `suppression` | new `//nolint`, `//strict:allow`, `//lint:ignore` or `//lint:file-ignore` comments |
 | `test-removed` | `Test`, `Benchmark`, `Fuzz` and `Example` functions that are gone from their directory (moving one to another file is fine) |
 | `test-skip` | new `t.Skip`, `Skipf` or `SkipNow` calls in test files |
+| `assertion-removed` | functions in test files, helpers included, that make fewer calls that can fail a test (`t.Error`, `t.Errorf`, `t.Fatal`, `t.Fatalf`, `t.Fail`, `t.FailNow`, testify's `assert.*` and `require.*`) than they did |
+| `build-excluded` | a new `//go:build` line that no build without `-tags` satisfies (`//go:build ignore`), so compile, analyze and test never see the file; or a changed one that drops platforms the file was built for |
+| `dependency-added` | new direct requirements and new `replace` directives in `go.mod`. Models invent plausible module paths, and attackers register them |
 | `marker-removed` | a `//strict:pure`, `//strict:units` or `//strict:contracts` marker the package no longer has |
 | `generated-edit` | changes to files marked `Code generated ... DO NOT EDIT`, which the next run of the generator discards unless it produced them |
 | `lint-config` | changes to `.golangci.yml` (or `.yaml`, `.toml`, `.json`) |
@@ -166,6 +175,19 @@ status is `warn` and `ok` stays `true`. The findings are for the person
 reviewing the change; `-review fail` makes them fail the run instead.
 `testdata` directories are skipped. Outside a git repository, or with no
 default branch to compare with, the step is skipped.
+
+### The coverage step
+
+Tests the model wrote pass by construction; what they leave out is easy to
+miss. `coverage` reports functions that changed since the default branch
+(by the same comparison as `review`) and that **no test runs at all**. The
+`test` step records coverage with `-coverpkg` set to the checked packages,
+so a function counts as tested when any package's tests reach it.
+
+A function with some statements run is not reported: line-level gaps are
+mostly error paths and would bury the functions with no test at all.
+`func main` is skipped. Like `review`, the step is advisory unless
+`-coverage fail`, and it needs the `test` step.
 
 ## The analyzers
 
@@ -277,14 +299,15 @@ Paste into the module's `CLAUDE.md` (or equivalent):
 ```markdown
 ## Checking and editing Go code
 
-- After every change, run `go tool strictcheck -steps compile,analyze` and fix
-  everything it reports before continuing. Treat `"ok": false` as not done.
+- After every change, run `go tool strictcheck -steps compile,analyze,format`
+  and fix everything it reports before continuing. Treat `"ok": false` as
+  not done.
 - Before saying a task is done, run all three and fix what they report:
   `go tool strictcheck`, `golangci-lint run ./...` and
   `nilaway -include-pkgs=<module path> ./...`.
-- List every finding of strictcheck's `review` step in your summary to the
-  user, each with one line on why the change is right. Do not leave them out
-  because `ok` is `true`.
+- List every finding of strictcheck's `review` and `coverage` steps in your
+  summary to the user, each with one line on why the change is right. Do not
+  leave them out because `ok` is `true`.
 - Read and edit by declaration: `go tool gosym show <dir> <Name>` to read,
   `go tool gosym replace <dir> <Name>` with the complete new declaration on
   stdin to change it, `gosym add`/`delete` for new or removed declarations.
@@ -294,6 +317,33 @@ Paste into the module's `CLAUDE.md` (or equivalent):
 - In `//strict:pure` packages, pass time, randomness and I/O results in as
   parameters. In `//strict:units` packages, use unit types, not float64.
 ```
+
+### Enforcing the rules in Claude Code
+
+Instructions are requests: a model can skip them, especially late in a long
+task. [`claude-code/`](claude-code) has hooks that Claude Code runs itself,
+so the main rules hold whether or not the model remembers them:
+
+| Hook | Script | What it does |
+|---|---|---|
+| `PreToolUse` on `Write` | `no-go-rewrite.sh` | Refuses to overwrite an existing `.go` file and points to `gosym` or a targeted `Edit` |
+| `PostToolUse` on edits | `check-after-edit.sh` | After an edit to a `.go` file or `go.mod`, or a `gosym replace`/`add`/`delete`, runs `strictcheck -steps compile,analyze,format` and hands the findings back |
+| `Stop` | `check-before-stop.sh` | Runs every step before Claude finishes and sends it back to work while `ok` is false. A passing state is remembered in `.git/strictcheck-ok`, so a turn that did not change Go code does not rerun the tests |
+
+To stop a loop, the `Stop` hook lets Claude finish the second time it
+tries; the unresolved report stays in the transcript. The hooks need `jq`.
+Copy them into your module:
+
+```sh
+src=$(go list -m -f '{{.Dir}}' github.com/tcw/gostrict)
+mkdir -p .claude/hooks
+cp "$src"/claude-code/hooks/*.sh .claude/hooks/
+cp "$src"/claude-code/settings.json .claude/settings.json   # or merge its "hooks" into yours
+chmod u+w .claude/settings.json .claude/hooks/*.sh
+```
+
+They call `go tool strictcheck`; set `STRICTCHECK=strictcheck` in the
+environment if you installed it with `go install`.
 
 ## Limitations
 

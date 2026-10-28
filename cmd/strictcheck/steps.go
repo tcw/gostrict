@@ -6,29 +6,40 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"golang.org/x/tools/cover"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/checker"
 	"golang.org/x/tools/go/packages"
 )
 
 // runner holds what the steps share. The compile step fills in pkgs, dirs,
-// modulePath and generated; later steps read them.
+// modulePath, goMod and generated; later steps read them.
 type runner struct {
 	root      rootDir
 	patterns  []string
 	short     bool
+	race      bool   // run tests with the race detector when cgo is available
+	cover     bool   // record a coverage profile for the coverage step
 	base      string // git ref the review step compares with; "" finds the default branch
 	analyzers []*analysis.Analyzer
 
 	pkgs       []*packages.Package
 	dirs       map[string]string // import path -> directory
 	modulePath string
+	goMod      string          // absolute path of the main module's go.mod
 	generated  map[string]bool // absolute file names with a "Code generated" header
+
+	changes *changeSet // what changed since the base, once computed
+
+	profiled bool             // the test step recorded a coverage profile
+	profiles []*cover.Profile // that profile
 }
 
 // stepFunc runs one step. It returns the diagnostics found, a short detail
@@ -77,6 +88,7 @@ func (r *runner) compile(ctx context.Context) ([]Diagnostic, string, error) {
 	for _, p := range pkgs {
 		if p.Module != nil && r.modulePath == "" {
 			r.modulePath = p.Module.Path
+			r.goMod = p.Module.GoMod
 		}
 		if len(p.GoFiles) > 0 {
 			r.dirs[p.PkgPath] = filepath.Dir(p.GoFiles[0])
@@ -152,11 +164,35 @@ func (r *runner) runAnalyzers(analyzers []*analysis.Analyzer) ([]Diagnostic, err
 	return diags, nil
 }
 
-// test runs go test -json and reports failing tests.
+// test runs go test -json and reports failing tests. Tests run in shuffled
+// order, so tests that depend on each other's side effects fail, and with
+// the race detector when cgo is available. The detail line names the
+// shuffle seed, to rerun the same order.
 func (r *runner) test(ctx context.Context) ([]Diagnostic, string, error) {
-	args := []string{"test", "-json", "-count=1"}
+	seed := strconv.FormatInt(time.Now().UnixNano(), 10)
+	args := []string{"test", "-json", "-count=1", "-shuffle=" + seed}
+	detail := []string{"shuffle seed " + seed}
+	if r.race {
+		if r.cgoEnabled(ctx) {
+			args = append(args, "-race")
+			detail = append(detail, "race detector on")
+		} else {
+			detail = append(detail, "race detector off: cgo is disabled")
+		}
+	}
 	if r.short {
 		args = append(args, "-short")
+	}
+	var profile string
+	if r.cover {
+		f, err := os.CreateTemp("", "strictcheck-cover-*.out")
+		if err != nil {
+			return nil, "", fmt.Errorf("create coverage profile: %w", err)
+		}
+		profile = f.Name()
+		_ = f.Close()
+		defer func() { _ = os.Remove(profile) }()
+		args = append(args, "-coverprofile="+profile, "-coverpkg="+strings.Join(r.patterns, ","))
 	}
 	args = append(args, r.patterns...)
 	stdout, stderr, code, err := run(ctx, r.root, "go", args...)
@@ -170,7 +206,20 @@ func (r *runner) test(ctx context.Context) ([]Diagnostic, string, error) {
 	if code != 0 && len(diags) == 0 {
 		return nil, "", fmt.Errorf("go test exited %d without a reported failure: %s", code, tail(stderr, 15))
 	}
-	return diags, "", nil
+	if profile != "" {
+		if r.profiles, err = cover.ParseProfiles(profile); err != nil {
+			return nil, "", fmt.Errorf("read coverage profile: %w", err)
+		}
+		r.profiled = true
+	}
+	return diags, strings.Join(detail, ", "), nil
+}
+
+// cgoEnabled reports whether go builds with cgo here, which the race
+// detector needs. Go turns cgo off by default when no C compiler is found.
+func (r *runner) cgoEnabled(ctx context.Context) bool {
+	out, _, code, err := run(ctx, r.root, "go", "env", "CGO_ENABLED")
+	return err == nil && code == 0 && strings.TrimSpace(string(out)) == "1"
 }
 
 // run executes a command in dir and returns its output and exit code. err

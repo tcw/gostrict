@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -40,7 +41,9 @@ func TestParseTestEvents(t *testing.T) {
 {"Action":"fail","Package":"m/q"}
 not json
 `
-	diags, err := parseTestEvents(strings.NewReader(events), map[string]string{"m/p": "/root/p"}, "/root")
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"p/a_test.go": "package p\n", "p/b_test.go": "package p\n"})
+	diags, err := parseTestEvents(strings.NewReader(events), map[string]string{"m/p": filepath.Join(root, "p")}, rootDir(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +75,39 @@ func TestCleanTestOutputDropsForeignFrames(t *testing.T) {
 	want := "panic: core/c.go:30: precondition failed\nexample.com/m/core.Distance(...)\n\tcore/c.go:30"
 	if got != want {
 		t.Errorf("cleanTestOutput =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestRaceReport(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"p/c_test.go": "package p\n"})
+	in := []string{
+		"==================",
+		"WARNING: DATA RACE",
+		"Read at 0x00c00011c188 by goroutine 9:",
+		"  example.com/m/p.Count.func1()",
+		"      " + root + "/p/c.go:19 +0x8e",
+		"Goroutine 9 (running) created at:",
+		"  example.com/m/p.TestCount()",
+		"      " + root + "/p/c_test.go:12 +0x24",
+		"  testing.tRunner()",
+		"      /usr/local/go/src/testing/testing.go:2195 +0x21c",
+		"    testing.go:1867: race detected during execution of test",
+	}
+	got := strings.Join(cleanTestOutput(in, rootDir(root)), "\n")
+	want := strings.Join([]string{
+		"==================", "WARNING: DATA RACE", "Read at 0x00c00011c188 by goroutine 9:",
+		"  example.com/m/p.Count.func1()", "      p/c.go:19",
+		"Goroutine 9 (running) created at:",
+		"  example.com/m/p.TestCount()", "      p/c_test.go:12",
+		"    testing.go:1867: race detected during execution of test",
+	}, "\n")
+	if got != want {
+		t.Errorf("cleanTestOutput =\n%s\nwant\n%s", got, want)
+	}
+	// The testing package's own log line is not a position in the package.
+	if file, line := locate(in, filepath.Join(root, "p"), rootDir(root)); file != filepath.Join(root, "p", "c_test.go") || line != 12 {
+		t.Errorf("locate = %s:%d, want the test file frame", file, line)
 	}
 }
 

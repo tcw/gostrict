@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -181,19 +182,30 @@ func cleanTestOutput(lines []string, root rootDir) []string {
 // frameOffset matches the " +0x1d" suffix of a stack frame file line.
 var frameOffset = regexp.MustCompile(` \+0x[0-9a-f]+$`)
 
-// isFrameFile reports whether l is the file:line half of a stack frame.
+// isFrameFile reports whether l is the file:line half of a stack frame:
+// tab-indented in panics, indented by six spaces and with a +0x offset in
+// race detector reports.
 func isFrameFile(l string) bool {
-	return strings.HasPrefix(l, "\t") && absGoPos.MatchString(l)
+	if !absGoPos.MatchString(l) {
+		return false
+	}
+	return strings.HasPrefix(l, "\t") || (strings.HasPrefix(l, "      /") && frameOffset.MatchString(l))
 }
 
 // locate finds the most useful source position in test output, preferring
-// a t.Errorf-style log line, then a frame in a _test.go file under root,
-// then any position under root.
+// a t.Errorf-style log line from a file in the package, then a frame in a
+// _test.go file under root, then any position under root. The package
+// check skips lines the testing package logs about itself, such as
+// "testing.go:1867: race detected during execution of test".
 func locate(lines []string, pkgDir string, root rootDir) (string, int) {
 	for _, l := range lines {
 		if m := testLogPos.FindStringSubmatch(l); m != nil && pkgDir != "" {
+			file := filepath.Join(pkgDir, m[1])
+			if _, err := os.Stat(file); err != nil {
+				continue
+			}
 			n, _ := strconv.Atoi(m[2])
-			return filepath.Join(pkgDir, m[1]), n
+			return file, n
 		}
 	}
 	var fallback string

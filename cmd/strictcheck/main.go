@@ -9,10 +9,14 @@
 //
 // Steps, in order:
 //
-//	compile  load and type-check all packages, tests included
-//	analyze  gostrict analyzers (argswap, units, purity, contracts), plus
-//	         the go vet suite unless -vet off
-//	test     go test -json
+//	compile   load and type-check all packages, tests included
+//	analyze   gostrict analyzers (argswap, units, purity, contracts,
+//	          directives), plus the go vet suite unless -vet off
+//	format    files gofmt would change
+//	tidy      go.mod and go.sum changes go mod tidy would make
+//	review    changes since the default branch that weaken checks (advisory)
+//	test      go test -json, with the race detector and in shuffled order
+//	coverage  changed functions that no test runs (advisory)
 //
 // When compile fails, the later steps are skipped: fix those errors first.
 package main
@@ -93,7 +97,7 @@ func vetAnalyzers() []*analysis.Analyzer {
 
 // allSteps lists the steps in the order they run.
 func allSteps() []string {
-	return []string{"compile", "analyze", "review", "test"}
+	return []string{"compile", "analyze", "format", "tidy", "review", "test", "coverage"}
 }
 
 type options struct {
@@ -102,9 +106,11 @@ type options struct {
 	format   string
 	max      int
 	short    bool
+	race     bool
 	vet      string
 	base     string
 	review   string
+	coverage string
 	timeout  time.Duration
 	patterns []string
 }
@@ -154,9 +160,11 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&opts.format, "format", "json", "output format: json or text")
 	fs.IntVar(&opts.max, "max", 200, "maximum findings to print (0 = all); counts still cover everything")
 	fs.BoolVar(&opts.short, "short", false, "pass -short to go test")
+	fs.BoolVar(&opts.race, "race", true, "run tests with the race detector (needs cgo; skipped when cgo is off)")
 	fs.StringVar(&opts.vet, "vet", "on", "run the go vet suite in the analyze step: on, off")
 	fs.StringVar(&opts.base, "base", "", "git ref the review step compares with (default: origin/HEAD, else main or master)")
 	fs.StringVar(&opts.review, "review", "warn", "review findings: warn (reported, ok unaffected) or fail")
+	fs.StringVar(&opts.coverage, "coverage", "warn", "coverage findings: warn (reported, ok unaffected) or fail")
 	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "overall time limit")
 	// Expose analyzer flags as -<analyzer>.<flag>, like go vet does.
 	for _, a := range strictAnalyzers() {
@@ -189,6 +197,9 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	if opts.review != "warn" && opts.review != "fail" {
 		return opts, fmt.Errorf("-review must be warn or fail, not %q", opts.review)
 	}
+	if opts.coverage != "warn" && opts.coverage != "fail" {
+		return opts, fmt.Errorf("-coverage must be warn or fail, not %q", opts.coverage)
+	}
 	opts.patterns = fs.Args()
 	if len(opts.patterns) == 0 {
 		opts.patterns = []string{"./..."}
@@ -208,8 +219,11 @@ func moduleRoot(opts options) rootDir {
 // check runs the selected steps in order and collects their results.
 func check(ctx context.Context, opts options) *Report {
 	root := moduleRoot(opts)
-	r := &runner{root: root, patterns: opts.patterns, short: opts.short, base: opts.base, analyzers: strictAnalyzers()}
 	want := func(s string) bool { return slices.Contains(opts.steps, s) }
+	r := &runner{
+		root: root, patterns: opts.patterns, short: opts.short, race: opts.race,
+		cover: want("coverage"), base: opts.base, analyzers: strictAnalyzers(),
+	}
 	if opts.vet == "on" {
 		r.analyzers = append(r.analyzers, vetAnalyzers()...)
 	}
@@ -219,7 +233,13 @@ func check(ctx context.Context, opts options) *Report {
 		rep.Steps = append(rep.Steps, s)
 		rep.Diagnostics = append(rep.Diagnostics, d...)
 	}
-	steps := map[string]stepFunc{"compile": r.compile, "analyze": r.analyze, "review": r.review, "test": r.test}
+	steps := map[string]stepFunc{
+		"compile": r.compile, "analyze": r.analyze, "format": r.format, "tidy": r.tidy,
+		"review": r.review, "test": r.test, "coverage": r.coverage,
+	}
+	// Advisory steps report findings for a person to look at; with warn
+	// they do not fail the run.
+	advisory := map[string]bool{"review": opts.review == "warn", "coverage": opts.coverage == "warn"}
 	blocked := ""
 	for _, name := range allSteps() {
 		// compile always runs: every later step needs the loaded packages.
@@ -231,7 +251,7 @@ func check(ctx context.Context, opts options) *Report {
 			continue
 		}
 		s, d := timed(ctx, name, steps[name])
-		if name == "review" && opts.review == "warn" {
+		if advisory[name] {
 			s.Advisory = true
 			if s.Status == statusFail {
 				s.Status = statusWarn
